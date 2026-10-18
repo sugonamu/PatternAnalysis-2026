@@ -1,0 +1,6 @@
+*.pth
+*.pt
+checkpoints/
+*.out
+*.err
+__pycache__/
