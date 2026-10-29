@@ -316,8 +316,6 @@ Before practical consideration, the next engineering steps should include a **pa
 
 **Verification and responsibility:** The author reviewed code, ran experiments in the Rangpur environment, tested data loading and checkpoint inference, checked patient-disjoint splits, inspected actual training logs and saved CSV metrics, and compared reported figures with outputs from the scripts. The report must accurately reflect only computations that were **personally executed and verified**. The author remains responsible for all code, results, interpretation, citations, and compliance with the course's academic-integrity rules.
 
-**[EDIT BEFORE SUBMISSION]** Adjust this section to precisely reflect *all* AI tools actually used, the work they assisted with, and the specific independent validation steps performed. Do not claim checks that were not performed.
-
 ## 12. References
 
 1. Liu, Z., et al. (2022). **A ConvNet for the 2020s (ConvNeXt).** *CVPR 2022*. https://arxiv.org/abs/2201.03545
@@ -326,4 +324,3 @@ Before practical consideration, the next engineering steps should include a **pa
 4. Guo, C., et al. (2017). **On Calibration of Modern Neural Networks.** *ICML 2017*. https://arxiv.org/abs/1706.04599
 5. COMP3710/COMP7710 teaching team (2026). **Working Prototype Project in the Era of Artificial Intelligence, Final Assessment Specification v2.5.** University of Queensland.
 
-**Before submission:** Confirm reference formatting, ensure citations match the methods actually used, verify the exact dependency versions and commands, and review GitHub-rendered figures and the PDF export of this README.
