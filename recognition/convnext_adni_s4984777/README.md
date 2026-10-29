@@ -42,22 +42,119 @@ Risks identified at feasibility review included overfitting to patient-specific 
 
 **Post-feasibility outcome:** Training and testing were completed; the 80% slice-level accuracy target was reached, while confidence calibration and AD false negatives remained substantial concerns.
 
-## 3. Dataset, preprocessing, and leakage controls
+## 3. Dataset, Preprocessing, and Leakage Controls
 
-The course provides preprocessed ADNI structural MRI slices as JPEG files under `/home/groups/comp3710/ADNI/AD_NC` on Rangpur. We use **NC = 0** and **AD = 1**. Each patient contributes multiple slices; consequently, randomly splitting individual slices would contaminate evaluation with correlated images from patients already seen during training.
+The project uses the Alzheimer's Disease Neuroimaging Initiative (ADNI) dataset provided by the COMP3710 course, containing preprocessed structural brain MRI slices stored as JPEG files under `/home/groups/comp3710/ADNI/AD_NC` on the University of Queensland Rangpur HPC cluster.
 
-| Split | Patients | MRI slices | NC slices | AD slices |
+The classification task distinguishes between two categories:
+
+- **Cognitively Normal (NC):** Label `0`
+- **Alzheimer's Disease (AD):** Label `1`
+
+### 3.1 Dataset Composition
+
+The dataset contains **30,520 MRI slices from 680 unique patients**. Each patient contributes multiple slices, making patient-level separation essential to avoid data leakage.
+
+| Split | Patients | MRI Slices | NC Slices | AD Slices |
 |---|---:|---:|---:|---:|
-| Train | 476 | 21,620 | 11,000 | 10,620 |
+| Training | 476 | 21,620 | 11,000 | 10,620 |
 | Validation | 102 | 4,460 | 2,220 | 2,240 |
-| Test | 102 | 4,440 | 2,440 | 2,000 |
+| Testing | 102 | 4,440 | 2,440 | 2,000 |
 | **Total** | **680** | **30,520** | **15,660** | **14,860** |
 
-The program uses **patient-stratified splitting**, with seed **42** and **no patient-ID overlap** across these partitions. The original on-disk folder name (`train/` or `test/`) does **not** determine the final split: the generated `splits.csv` manifest does. This explains why a held-out test sample may have a physical filename beneath the dataset's original `train/` directory.
+The dataset was divided into approximately 70% training, 15% validation, and 15% testing by patient count.
 
-At inference, images are loaded, converted to three-channel RGB, resized to **224 × 224**, converted to tensors, and normalized using ImageNet means `(0.485, 0.456, 0.406)` and standard deviations `(0.229, 0.224, 0.225)`. The model consumes tensors shaped `(batch, 3, 224, 224)`. **[VERIFY FROM `dataset.py`: document the exact train-time augmentation, if any; note whether any orientation-changing transforms were avoided.]** Validation/test transformations must remain deterministic.
+### 3.2 Patient-Level Splitting and Leakage Prevention
 
-**Important limitations:** The 30,520 slices are not 30,520 statistically independent patients. Test metrics here are **slice-level**; they cannot be interpreted as patient-level diagnostic sensitivity or clinical accuracy. Data permission restrictions also apply to sharing medical images and patient-identifying manifests.
+A significant risk in medical imaging classification is **patient-level data leakage**, where MRI slices from the same patient appear in both training and evaluation datasets.
+
+Because slices from the same patient share anatomical and acquisition characteristics, randomly splitting individual images could produce misleadingly optimistic evaluation results.
+
+To mitigate this issue, `dataset.py` implements patient-stratified splitting using a fixed random seed of `42`.
+
+The splitting procedure ensures that:
+
+1. All MRI slices belonging to the same patient remain within one partition.
+2. Training, validation, and testing sets contain mutually exclusive patient IDs.
+3. Class representation is maintained through stratification.
+4. Experiments use consistent dataset partitions for fair comparison.
+
+The final dataset audit confirmed **zero patient-ID overlap** between training, validation, and testing.
+
+The generated `splits.csv` manifest determines which partition each image belongs to. The original dataset directory structure does not determine the final split.
+
+For example, an MRI image physically located inside the original `train/AD/` directory may belong to the final held-out test partition if its patient was assigned to that partition during patient-independent splitting.
+
+### 3.3 Image Preprocessing and Data Augmentation
+
+Images are converted to three-channel RGB representations and resized to **224 × 224 pixels** to satisfy the input requirements of ConvNeXt-Tiny.
+
+The training and evaluation pipelines use different transformations.
+
+**Training pipeline:**
+
+1. Resize the image to `224 × 224`.
+2. Apply random rotation within ±10 degrees.
+3. Convert the image into a PyTorch tensor.
+4. Normalize the tensor using ImageNet normalization parameters.
+
+**Validation and testing pipeline:**
+
+1. Resize the image to `224 × 224`.
+2. Convert the image into a PyTorch tensor.
+3. Apply the same ImageNet normalization.
+
+The normalization parameters are:
+
+| Channel | Mean | Standard Deviation |
+|---|---:|---:|
+| Red | 0.485 | 0.229 |
+| Green | 0.456 | 0.224 |
+| Blue | 0.406 | 0.225 |
+
+The final input tensor has shape:
+
+`(batch_size, 3, 224, 224)`
+
+Random rotation is applied only during training to introduce image variability and reduce sensitivity to small orientation changes.
+
+Validation and testing transformations remain deterministic, ensuring that reported evaluation results are not affected by random augmentation.
+
+### 3.4 Data Loading
+
+The `get_dataloaders()` function in `dataset.py` creates three PyTorch `DataLoader` objects:
+
+- `train`: Uses training augmentation with shuffled samples.
+- `val`: Uses deterministic preprocessing without shuffling.
+- `test`: Uses deterministic preprocessing without shuffling.
+
+The default DataLoader configuration is:
+
+| Parameter | Value |
+|---|---|
+| Batch size | 32 |
+| Number of workers | 4 |
+| Image size | 224 × 224 |
+| Training shuffle | Enabled |
+| Validation/test shuffle | Disabled |
+| Pin memory | Enabled when CUDA is available |
+| Persistent workers | Enabled when worker count is greater than zero |
+
+These values are the loader's defaults; individual training and evaluation commands may override them.
+
+### 3.5 Dataset Limitations
+
+Although the dataset contains 30,520 MRI slices, these observations are not statistically independent because multiple slices originate from the same patient.
+
+Consequently, the reported performance metrics are **slice-level metrics**, not patient-level diagnostic metrics.
+
+An accuracy of 81.42% on individual MRI slices cannot be interpreted as 81.42% patient-level diagnostic accuracy.
+
+Furthermore, the model processes individual 2D slices rather than complete 3D MRI volumes, potentially losing contextual anatomical information between adjacent slices.
+
+The prototype is therefore intended for experimental pattern recognition research rather than independent clinical diagnosis.
+
+
 
 ## 4. Models and working principles
 
@@ -75,21 +172,24 @@ Transfer learning is an important difference between the models: the ConvNeXt re
 
 The investigation compared a baseline CNN against ConvNeXt with (a) full fine-tuning at two learning rates, (b) training only the final classifier head (frozen backbone), and (c) partial fine-tuning of the later ConvNeXt stage plus classifier. The training code and job configurations document the exact modes. The first attempt at partial fine-tuning unintentionally left the whole network trainable; the corrected run should be distinguished from that invalid configuration in any discussion of ablation results.
 
-## 5. Implementation and reproducibility
+## 5. Implementation and Reproducibility
 
-### 5.1 Directory layout
+### 5.1 Directory Layout
+
+The implementation is organized into modular Python scripts, separating model architecture, dataset handling, training, inference, evaluation, and experimental analysis.
 
 ```text
 recognition/convnext_adni_s4984777/
 ├── README.md
-├── modules.py            # Model architectures
-├── dataset.py            # Dataset audit, split, loading, transforms
-├── train.py              # Model training and checkpoint saving
-├── predict.py            # Single-image inference and visualization
-├── evaluate.py           # Held-out test evaluation
-├── plot_train.py         # Training history figures
-├── conf.py               # Confidence, calibration, and referral analysis
-├── error.py              # Representative error selection/plots
+├── requirements.txt
+├── modules.py
+├── dataset.py
+├── train.py
+├── predict.py
+├── evaluate.py
+├── plot_train.py
+├── conf.py
+├── error.py
 ├── baseline.sbatch
 ├── train.sbatch
 ├── exp2.sbatch
@@ -97,97 +197,346 @@ recognition/convnext_adni_s4984777/
 ├── exp4.sbatch
 ├── eval.sbatch
 ├── predict.sbatch
-└── figures/              # Reviewed plots included in this README
+└── figures/
+    ├── baseline_loss.png
+    ├── convnext_loss.png
+    ├── convnext_accuracy.png
+    ├── experiment_comparison.png
+    ├── baseline_confusion_matrix.png
+    ├── convnext_confusion_matrix.png
+    ├── convnext_roc.png
+    ├── calibration.png
+    ├── coverage_accuracy.png
+    └── confidence_distribution.png
 ```
 
-`checkpoints/`, `results/`, Rangpur job logs, and the original ADNI files are **local/generated artifacts** and are not intended to be committed. Do not commit model weights, raw MRI images, or identifiable patient-level manifests to the public repository.
+The main scripts have the following responsibilities:
 
-### 5.2 Environment and dependencies
+| File | Purpose |
+|---|---|
+| `modules.py` | Defines BaselineCNN and ConvNeXt-Tiny model architectures. |
+| `dataset.py` | Implements patient-level splitting, preprocessing, and DataLoaders. |
+| `train.py` | Handles model training, validation, and checkpoint selection. |
+| `predict.py` | Performs individual MRI slice inference and visualizes predictions. |
+| `evaluate.py` | Computes held-out test metrics and evaluation figures. |
+| `plot_train.py` | Generates training curves and experiment comparisons. |
+| `conf.py` | Evaluates confidence calibration and referral thresholds. |
+| `error.py` | Selects and analyzes representative false-positive and false-negative predictions. |
 
-Experiments were run on UQ's **Rangpur** HPC GPU resources, using an **NVIDIA A100** allocated via Slurm. Python and the main libraries include `torch`, `torchvision`, `numpy`, `pandas`, `Pillow`, `scikit-learn`, and `matplotlib`.
+The `checkpoints/`, `results/`, and Slurm log files are generated during execution and are not intended for submission.
 
-**[REQUIRED BEFORE SUBMISSION]** Replace this paragraph with the *actual exact versions* from the working environment and add a tested `requirements.txt`. Run, for example:
+The repository excludes trained model weights and original ADNI images. Patient-identifying manifests should also not be made publicly accessible without appropriate authorization.
+
+### 5.2 Environment and Dependencies
+
+The project was implemented using **Python and PyTorch** on the University of Queensland Rangpur HPC cluster.
+
+Model training and evaluation were performed on an **NVIDIA A100 GPU**.
+
+The project was developed and evaluated on the University of Queensland Rangpur HPC cluster using the following environment:
+
+| Component | Configuration |
+|---|---|
+| Python | 3.14.7 |
+| Deep learning framework | PyTorch 2.14.1 |
+| torchvision | 0.29.1 |
+| CUDA build used by PyTorch | 13.0 |
+| GPU | NVIDIA A100 |
+| Environment | Rangpur HPC, Conda `base` |
+
+The installed environment passed `python -m pip check`, reporting no broken package requirements.
+
+The CUDA version refers to the CUDA version against which PyTorch was built, not necessarily the installed NVIDIA driver version. The reported package versions document the working environment; fresh-environment reproducibility has not yet been independently tested.
+
+The following Python package versions were reported by the working environment:
+
+| Package | Version |
+|---|---|
+| PyTorch | 2.14.1 |
+| torchvision | 0.29.1 |
+| NumPy | 2.5.4 |
+| pandas | 3.0.6 |
+| scikit-learn | 1.9.1 |
+| Pillow | 12.3.0 |
+| matplotlib | 3.11.2 |
+
+The exact Python package dependencies are recorded in `requirements.txt`.
+
+To install the required packages:
 
 ```bash
-python --version
-python -c "import torch, torchvision, numpy, pandas, sklearn, matplotlib, PIL; print('torch',torch.__version__,'torchvision',torchvision.__version__,'numpy',numpy.__version__,'pandas',pandas.__version__,'sklearn',sklearn.__version__,'matplotlib',matplotlib.__version__,'Pillow',PIL.__version__)"
+python -m pip install -r requirements.txt
 ```
 
-### 5.3 Reproduction commands
+The implementation additionally requires access to the COMP3710 ADNI dataset located on Rangpur:
 
-Run these commands **inside** the `recognition/convnext_adni_s4984777` directory. Access to course-provided ADNI data on Rangpur is required. Generate or check the patient-level manifest using the dataset script's documented interface **[VERIFY EXACT COMMAND WITH `python dataset.py --help` OR ITS MAIN BLOCK]**. Do not assume the supplied original train/test folders are patient-independent.
+```text
+/home/groups/comp3710/ADNI/AD_NC
+```
 
-A simple model smoke check is:
+Dataset files and trained model checkpoints are not distributed with the repository.
+
+Reproducing the trained-model evaluation requires either training a checkpoint with the provided scripts or obtaining an appropriately authorized checkpoint separately.
+
+The software versions above document the original environment; installation and reproducibility on a fresh environment have not yet been independently verified.
+
+### 5.3 Reproduction Commands
+
+All commands below are executed from the project directory:
 
 ```bash
-python -m py_compile modules.py dataset.py train.py predict.py evaluate.py
+cd ~/convnext/PatternAnalysis-2026/recognition/convnext_adni_s4984777
 ```
 
-Training example (GPU Slurm allocation required):
+#### Step 1 — Generate Patient-Level Dataset Splits
+
+The patient-independent train, validation, and test partitions are generated by running:
 
 ```bash
-# From a GPU allocation, or via the appropriate .sbatch file:
-python train.py --model baseline --epochs 5 --batch-size 8 --require-cuda
-python train.py --model convnext --epochs 5 --batch-size 8 --lr 1e-4 --require-cuda
+python dataset.py
 ```
 
-For the recorded experiments, use the committed `baseline.sbatch`, `train.sbatch`, `exp2.sbatch`, `exp3.sbatch`, and **corrected** `exp4.sbatch` configurations. Checkpoint selection used the **minimum validation loss**, and the held-out test split was not used for training/selection. Saved checkpoints reside locally in `checkpoints/<run>/<model>/best.pth` or `checkpoints/<model>/best.pth`, depending on the run.
+This command invokes the `generate_splits()` function and produces the `splits.csv` manifest required by the DataLoaders.
 
-Final evaluation (requires a trained local checkpoint):
+The generated partitions are configured to use a fixed random seed of `42`, enabling consistent patient-level dataset assignments when the same source data and splitting procedure are used.
+
+**Note:** The command should only be rerun intentionally because it may overwrite the existing split manifest.
+
+#### Step 2 — Check Python Scripts
+
+Before training, basic syntax verification can be performed using:
+
+```bash
+python -m py_compile \
+  modules.py \
+  dataset.py \
+  train.py \
+  predict.py \
+  evaluate.py \
+  plot_train.py \
+  conf.py \
+  error.py
+```
+
+This checks Python syntax but does not establish that all dependencies, datasets, and GPU resources are available.
+
+#### Step 3 — Train Baseline CNN
+
+To train the lightweight baseline model using the provided Slurm configuration:
+
+```bash
+sbatch baseline.sbatch
+```
+
+Alternatively, within an appropriate GPU allocation:
+
+```bash
+python train.py \
+  --model baseline \
+  --epochs 5 \
+  --batch-size 8 \
+  --require-cuda
+```
+
+#### Step 4 — Train ConvNeXt-Tiny
+
+To reproduce the primary ConvNeXt-Tiny experiment:
+
+```bash
+sbatch train.sbatch
+```
+
+Alternatively, within an appropriate GPU allocation:
+
+```bash
+python train.py \
+  --model convnext \
+  --epochs 5 \
+  --batch-size 8 \
+  --lr 1e-4 \
+  --require-cuda
+```
+
+The primary configuration uses a learning rate of `1e-4` and a maximum of five training epochs.
+
+Model checkpoints are selected according to the **lowest validation loss**.
+
+The held-out test data is not used for model optimization or checkpoint selection.
+
+#### Step 5 — Reproduce Additional Experiments
+
+Three additional ConvNeXt configurations were evaluated:
+
+| Experiment | Configuration | Slurm Command |
+|---|---|---|
+| Experiment 2 | Lower learning rate (`1e-5`) | `sbatch exp2.sbatch` |
+| Experiment 3 | Frozen ConvNeXt backbone | `sbatch exp3.sbatch` |
+| Experiment 4 | Partial fine-tuning | `sbatch exp4.sbatch` |
+
+Each experiment uses the same patient-independent dataset partitions to support fair comparison.
+
+#### Step 6 — Evaluate the Trained Model
+
+To evaluate the selected ConvNeXt checkpoint on the held-out test partition:
 
 ```bash
 sbatch eval.sbatch
-# Or within a suitable GPU allocation:
-python evaluate.py --model convnext --checkpoint checkpoints/convnext/best.pth \
-  --output-dir results/convnext --batch-size 8 --require-cuda
 ```
 
-Prediction example:
+Alternatively, within an appropriate GPU allocation:
 
 ```bash
-python predict.py --model convnext --checkpoint checkpoints/convnext/best.pth \
-  --test-index 0 --output results/prediction_convnext.png
+python evaluate.py \
+  --model convnext \
+  --checkpoint checkpoints/convnext/best.pth \
+  --output-dir results/convnext \
+  --batch-size 8 \
+  --require-cuda
 ```
 
-**Recorded example output:** for a test image labeled AD, the model predicted **NC 78.53%**, **AD 21.47%**, hence an incorrect NC classification. `predict.py` prints the class probabilities and saves a side-by-side visualization. The example's index refers to the final split manifest; it is not necessarily the first image in a source folder.
+The evaluation script generates classification metrics, confusion matrices, ROC curves, and per-image prediction records.
 
-Reproduce report plots using:
+The primary reported ConvNeXt model achieved **81.42% test accuracy** on 4,440 held-out MRI slices.
+
+This exceeded the assignment's 80% test accuracy threshold for the hard-difficulty ConvNeXt classification task.
+
+#### Step 7 — Run Individual MRI Predictions
+
+The `predict.py` script demonstrates how to load the trained model and predict the class of a single MRI image.
+
+For example:
+
+```bash
+python predict.py \
+  --model convnext \
+  --checkpoint checkpoints/convnext/best.pth \
+  --test-index 0 \
+  --output results/prediction_convnext.png
+```
+
+A recorded example produced:
+
+| Field | Result |
+|---|---|
+| Ground-truth class | AD |
+| Predicted class | NC |
+| NC probability | 78.53% |
+| AD probability | 21.47% |
+| Classification outcome | False Negative |
+
+The prediction script prints the predicted probabilities and creates a visual representation of the selected input and corresponding classification result.
+
+The test index refers to the ordering of the generated test partition, not necessarily the order of images in the original dataset directories.
+
+#### Step 8 — Generate Training and Evaluation Analysis
+
+Training histories can be processed using:
 
 ```bash
 python plot_train.py
+```
+
+This generates training and validation accuracy/loss curves, along with a comparison of model configurations.
+
+Confidence calibration and referral-threshold analysis can be reproduced using:
+
+```bash
 python conf.py
+```
+
+Representative misclassification analysis can be generated using:
+
+```bash
 python error.py
 ```
 
-The analytical scripts read local training histories, prediction CSVs, and the split manifest; they do not retrain the models. **[VERIFY ALL COMMANDS AND CHECKPOINT PATHS AGAINST THE FINAL GIT COMMIT.]**
+These scripts use previously generated training histories, evaluation predictions, and dataset metadata.
 
-## 6. Training experiments and model selection
+They do not retrain the classification models.
 
-The baseline and ConvNeXt were evaluated under matching patient-independent data partitions. The original ConvNeXt used full fine-tuning and learning rate **1×10⁻⁴**. A second full-fine-tuning experiment used **1×10⁻⁵**; the later experiments tested a fully frozen feature backbone and partial fine-tuning. A fixed architecture and data split permit examination of optimization and adaptation trade-offs, although some other settings differ by experiment.
+#### Step 9 — Output Artifacts
 
-| Run | Configuration | Selected epoch (minimum val. loss) | Validation accuracy at selected epoch | Main observation |
-|---|---|---:|---:|---|
-| Baseline | Four-block CNN, 5 epochs | 2 | 73.52% | Lower-capacity comparison |
-| ConvNeXt 1 | Full fine-tune, LR 1e-4, 5 epochs | 1 | **83.05%** | Best validation-loss checkpoint |
-| ConvNeXt 2 | Full fine-tune, LR 1e-5, up to 10 epochs | 2 | 80.22% | Lower LR did not outperform Experiment 1 |
-| ConvNeXt 3 | Frozen pretrained backbone, head training | 4 | 74.06% | Representation adaptation was too restricted |
-| ConvNeXt 4 | Corrected partial fine-tuning, LR 1e-5 | 2 | 74.98% | Later-stage-only fine-tuning did not outperform full fine-tuning |
+Generated results are stored in the local `results/` directory, including:
 
-**[VERIFY ABOVE EXPERIMENT SUMMARY AGAINST YOUR GENERATED `experiment_summary.csv`.]** The corrected partial run reached a higher *intermediate* validation accuracy in a later epoch, but its selected checkpoint corresponds to the **lowest validation loss**, not the maximum validation accuracy. Do not confuse these measures.
+```text
+results/
+├── baseline/
+├── convnext/
+├── training_curves/
+├── confidence_analysis/
+├── error_analysis/
+└── prediction_convnext.png
+```
+
+Selected reviewed figures are copied into the `figures/` directory for inclusion in this README.
+
+Model checkpoints and generated datasets are excluded from the public repository in accordance with the project submission requirements.
+
+## 6. Training Experiments and Model Selection
+
+Five training configurations were evaluated using the same patient-independent training and validation partitions: one baseline CNN and four ConvNeXt-Tiny configurations. The experiments investigated whether learning rate selection and the extent of backbone fine-tuning affected model performance and generalization.
+
+The primary ConvNeXt experiment used full fine-tuning with a learning rate of `1e-4`. A second experiment reduced the learning rate to `1e-5`, while subsequent experiments investigated frozen-backbone training and partial fine-tuning.
+
+### 6.1 Experiment Comparison
+
+| Model | Epochs Completed | Selected Checkpoint Epoch | Best Validation Loss | Validation Accuracy at Checkpoint | Highest Validation Accuracy |
+|---|---:|---:|---:|---:|---:|
+| Baseline CNN | 5 | 2 | 0.5189 | 73.52% | 74.96% |
+| ConvNeXt (LR 1e-4) | 5 | 1 | **0.4679** | **83.05%** | **83.05%** |
+| ConvNeXt (LR 1e-5) | 10 | 2 | 0.5115 | 80.22% | 81.43% |
+| ConvNeXt (Frozen Backbone) | 7 | 4 | 0.5244 | 74.06% | 74.06% |
+| ConvNeXt (Partial Fine-tuning) | 5 | 2 | 0.5332 | 74.98% | 77.26% |
+
+All checkpoints were selected according to **minimum validation loss**, rather than maximum validation accuracy.
+
+The distinction is important because several experiments achieved their highest validation accuracy at an epoch different from the selected checkpoint.
+
+For example, partial fine-tuning reached 77.26% validation accuracy during training, but the checkpoint selected by minimum validation loss achieved only 74.98%.
+
+### 6.2 Training and Validation Curves
 
 ![Baseline training and validation loss](figures/baseline_loss.png)
 
-*Figure 2. Baseline training/validation loss.*
+*Figure 2. Training and validation loss of the baseline CNN across five epochs.*
 
 ![ConvNeXt full fine-tuning loss](figures/convnext_loss.png)
 
-*Figure 3. Original ConvNeXt training/validation loss; the minimum-validation-loss checkpoint was at epoch 1.*
+*Figure 3. Training and validation loss of the primary ConvNeXt-Tiny configuration (learning rate 1e-4). The selected checkpoint corresponds to epoch 1.*
 
 ![ConvNeXt training and validation accuracy](figures/convnext_accuracy.png)
 
-*Figure 4. Accuracy progression during full fine-tuning.*
+*Figure 4. Training and validation accuracy of ConvNeXt-Tiny during full fine-tuning.*
 
-The original ConvNeXt training accuracy rose to very high values while validation loss deteriorated after the first epoch. This **generalization gap** is consistent with overfitting. The model selected for final testing was therefore `checkpoints/convnext/best.pth` from epoch 1, *not* the final-epoch checkpoint.
+![Validation accuracy across experiments](figures/experiment_comparison.png)
+
+*Figure 5. Validation accuracy across the baseline CNN and four ConvNeXt-Tiny configurations.*
+
+### 6.3 Interpretation
+
+**Full fine-tuning (learning rate 1e-4).** The primary ConvNeXt experiment achieved the highest validation accuracy at its selected checkpoint (83.05%) and the lowest validation loss (0.4679) among the five configurations. This suggests that adapting the full pretrained backbone was more effective than restricting the trainable layers under the tested settings.
+
+**Lower learning rate (1e-5).** Reducing the learning rate produced 80.22% validation accuracy at the selected checkpoint. Although this configuration achieved reasonable performance, it did not outperform the original full fine-tuning experiment.
+
+**Frozen backbone.** Training only the classification head achieved 74.06% validation accuracy. This result suggests that pretrained representations alone were insufficient for optimal discrimination in this particular MRI classification setting.
+
+**Partial fine-tuning.** Unfreezing only part of the network achieved 74.98% validation accuracy at the selected checkpoint. Its maximum observed validation accuracy was 77.26%, indicating that the selected checkpoint and peak accuracy occurred at different stages of training.
+
+**Generalization and overfitting.** In the primary ConvNeXt experiment, final training accuracy reached approximately 98.53%, while the selected checkpoint achieved 83.05% validation accuracy. The training curves also show that validation loss deteriorated after the first epoch, consistent with overfitting. Selecting the checkpoint with the lowest validation loss reduced reliance on later epochs with poorer validation behavior.
+
+### 6.4 Model Selection
+
+The primary ConvNeXt-Tiny model, trained with full fine-tuning and a learning rate of `1e-4`, was selected for held-out test evaluation.
+
+Its checkpoint was saved at:
+
+`checkpoints/convnext/best.pth`
+
+This checkpoint corresponds to **epoch 1**, selected by minimum validation loss rather than the final training epoch.
+
+The final test set was not used to select the checkpoint. The comparison is therefore based on validation performance before held-out test evaluation.
+
+Because training settings were not identical across all experiments, the results should be interpreted as comparisons of the tested configurations rather than isolated causal effects of individual hyperparameters.
 
 ## 7. Held-out test benchmark
 
@@ -218,17 +567,17 @@ Both selected checkpoints were evaluated once on the same **4,440 test MRI slice
 
 ![Baseline confusion matrix](figures/baseline_confusion_matrix.png)
 
-*Figure 5. BaselineCNN confusion matrix.*
+*Figure 6. BaselineCNN confusion matrix.*
 
 ![ConvNeXt confusion matrix](figures/convnext_confusion_matrix.png)
 
-*Figure 6. ConvNeXt-Tiny confusion matrix.*
+*Figure 7. ConvNeXt-Tiny confusion matrix.*
 
 ### 7.2 ROC-AUC
 
 ![ConvNeXt ROC curve](figures/convnext_roc.png)
 
-*Figure 7. ConvNeXt ROC curve. AUROC measures ranking/discrimination across thresholds, not the calibration of predicted probabilities.*
+*Figure 8. ConvNeXt ROC curve. AUROC measures ranking/discrimination across thresholds, not the calibration of predicted probabilities.*
 
 ### 7.3 Resource trade-offs
 
@@ -257,7 +606,7 @@ ConvNeXt has markedly **higher accuracy and lower Brier score**, yet **higher EC
 
 ![Confidence calibration comparison](figures/calibration.png)
 
-*Figure 8. Predicted confidence compared with empirical accuracy. The deviation from the diagonal illustrates confidence miscalibration.*
+*Figure 9. Predicted confidence compared with empirical accuracy. The deviation from the diagonal illustrates confidence miscalibration.*
 
 ### 8.1 Referral threshold illustration
 
@@ -274,33 +623,112 @@ A simple selective-classification rule accepts the model's predicted label only 
 
 ![Coverage versus selective accuracy](figures/coverage_accuracy.png)
 
-*Figure 9. Referral/coverage trade-off. Accuracy improves among accepted slices as acceptance becomes more selective, at the cost of more manual referrals.*
+*Figure 10. Referral/coverage trade-off. Accuracy improves among accepted slices as acceptance becomes more selective, at the cost of more manual referrals.*
 
 The **90% threshold is an illustrative operating point**, *not* a clinically safe recommendation: even at this threshold, **279 AD false negatives** remain among automated decisions. Because threshold values were explored using test predictions, any operational threshold must be selected using **validation data** and then assessed on an untouched independent cohort. In a medical screening context, a single global softmax cutoff may be insufficient; class-sensitive referral rules, calibration, and clinician oversight merit further investigation.
 
-## 9. Representative failure-case autopsy
+## 9. Representative Failure-Case Autopsy
 
-The selected ConvNeXt checkpoint made **825 slice-level errors**: **459 false negatives** (AD→NC) and **366 false positives** (NC→AD). Five representative cases were deliberately chosen to cover both error directions and extreme confidence levels, rather than simply taking the first five mistakes.
+The selected ConvNeXt-Tiny checkpoint made **825 incorrect predictions** across the 4,440 held-out MRI slices:
 
-| Case | True → Predicted | Confidence | Test index | Observation |
+- **459 false negatives (AD → NC):** Alzheimer's disease slices incorrectly classified as cognitively normal.
+- **366 false positives (NC → AD):** Cognitively normal slices incorrectly classified as Alzheimer's disease.
+
+Five representative misclassifications were selected to investigate both error directions and differences in prediction confidence.
+
+### 9.1 Selected Failure Cases
+
+| Case | Ground Truth → Prediction | Confidence | Test Index | Failure Type |
 |---|---|---:|---:|---|
-| 1 | AD → NC | 99.94% | 3273 | Extremely confident AD false negative |
-| 2 | AD → NC | 50.10% | 3233 | Near-boundary AD false negative |
-| 3 | NC → AD | 99.93% | 2595 | Extremely confident NC false positive |
-| 4 | NC → AD | 50.28% | 3870 | Near-boundary NC false positive |
-| 5 | AD → NC | 99.93% | 960 | Additional extremely confident AD false negative |
+| 1 | AD → NC | 99.94% | 3273 | High-confidence false negative |
+| 2 | AD → NC | 50.10% | 3233 | Near-boundary false negative |
+| 3 | NC → AD | 99.93% | 2595 | High-confidence false positive |
+| 4 | NC → AD | 50.28% | 3870 | Near-boundary false positive |
+| 5 | AD → NC | 99.93% | 960 | High-confidence false negative |
 
-**High-confidence failures (1, 3, 5).** These are direct counterexamples to interpreting a near-certain softmax output as an assured diagnosis. The error occurs in both directions, including the higher-risk AD→NC direction, so simply deferring low-confidence predictions cannot eliminate all dangerous mistakes.
+The five cases were confirmed to originate from **five distinct patients** using the `patient_id` field in `results/error_analysis/representative_errors.csv`.
 
-**Near-boundary failures (2, 4).** With probabilities near 50/50, the classifier has little separation between its two output scores. Such cases illustrate the kind of uncertainty that a reject-option rule can detect. A referral policy could flag them, but that alone does not resolve the confident errors above.
+Selecting distinct patients avoids presenting several slices from one patient as separate patient-level examples.
 
-**Possible visual and modeling contributors.** The model sees only a **single 2D slice**, not a complete volumetric brain MRI. Differences in slice position, acquisition characteristics, contrast, or weakly visible structures may influence predictions; however, **the images alone do not establish which factor caused any specific error**. These cases were purposefully selected as *illustrative extremes*, not a representative random sample for estimating population error rates. The full-test-set confidence analysis provides the quantitative evidence.
+### Prediction-to-Image Alignment Verification
 
-**[VERIFY]** Confirm that the five selected cases correspond to distinct `patient_id` values and that all prediction-to-image alignment checks passed. Keep identifiable patient IDs and path information out of the public README.
+Before selecting representative failures, `error.py` validates the correspondence between prediction records and the held-out test dataset.
 
-**Medical image publication:** The generated `results/error_analysis/representative_errors.png` contains course-supplied MRI slices. **Do not put this image in a public GitHub repository unless the dataset permissions explicitly permit redistribution.** If approved, add a reviewed, de-identified figure to `figures/` and uncomment this line:
+The script checks that the test DataLoader uses a sequential sampler, verifies prediction index consistency, and performs tensor-based comparisons using `torch.allclose()` to detect image-order mismatches. Detected inconsistencies cause the analysis to terminate with a `RuntimeError`.
 
-<!-- ![Five representative MRI misclassifications](figures/representative_errors.png) -->
+The error-analysis script completed successfully, providing evidence that its implemented alignment checks passed. This supports the validity of the reported test indices and selected failure cases.
+
+The five selected examples also originate from five distinct patients, as verified from the test manifest.
+
+### 9.2 Qualitative Inspection of Individual Failure Cases
+
+Visual inspection of the five selected MRI slices reveals variations in anatomical cross-section, the appearance of internal fluid-filled spaces, and the visibility of surrounding brain structures. These observations are descriptive and do not establish the clinical causes of the model's errors.
+
+| Case | Error | Visual Observation | Interpretation |
+|---|---|---|---|
+| 1 | AD → NC (99.94%) | The slice shows a relatively compact internal dark space compared with several other selected examples, with a different visible cross-section of the surrounding brain tissue. | The model confidently predicts NC despite the AD label. The visible anatomy alone does not explain this error. |
+| 2 | AD → NC (50.10%) | A prominent elongated dark central space is visible, and the slice shows a different anatomical cross-section from Case 1. | The prediction is close to the decision boundary, indicating model uncertainty despite the AD ground truth. |
+| 3 | NC → AD (99.93%) | The slice contains a prominent dark internal space and clearly visible cortical folds. Its general appearance shares features with some AD-labelled examples in the selected set. | The model confidently predicts AD for an NC-labelled slice, illustrating that visible structural similarities do not necessarily correspond to the correct class. |
+| 4 | NC → AD (50.28%) | The image also shows a prominent dark internal space, with differences in the surrounding tissue contours and apparent slice geometry compared with Case 3. | The near-50% confidence suggests weak separation between the two model output scores. |
+| 5 | AD → NC (99.93%) | The slice shows visible cortical folding and an elongated internal dark region, with a different tissue outline and cross-section from Case 1. | The model makes another highly confident false-negative prediction, suggesting that confidence alone is insufficient for reliable screening. |
+
+The examples illustrate substantial visual variation across both diagnostic categories. However, the available 2D slices do not permit a reliable determination of whether differences arise from pathology, slice position, acquisition parameters, preprocessing, or natural anatomical variability.
+
+In particular, the five images should not be used to diagnose ventricular enlargement, cortical atrophy, or other clinical abnormalities without expert interpretation and access to the full MRI volumes.
+
+The strongest conclusion supported by these cases is that **ConvNeXt-Tiny makes both uncertain and extremely confident classification errors across visually different MRI slices**.
+
+The cases were deliberately selected to illustrate these failure modes, not to estimate their frequency in the wider population.
+
+### 9.3 Near-Boundary Misclassifications
+
+Cases 2 and 4 were incorrectly classified with confidence values of 50.10% and 50.28%, respectively.
+
+Because the model produces probabilities for two classes, confidence values close to 50% indicate that neither class received substantially greater probability than the other.
+
+These examples demonstrate the type of uncertainty that confidence-based referral mechanisms are intended to capture.
+
+A referral rule could flag such predictions for human review instead of automatically accepting the classification.
+
+However, the presence of high-confidence errors shows that confidence thresholding alone cannot eliminate all incorrect predictions.
+
+### 9.4 Potential Sources of Failure
+
+Several factors may contribute to the observed classification errors.
+
+**Limited anatomical context.** The classifier processes individual 2D MRI slices rather than complete 3D MRI volumes. A single slice may not provide sufficient anatomical context to distinguish AD from NC reliably.
+
+**Inter-patient variability.** Differences in anatomy, acquisition characteristics, and image appearance may influence classification.
+
+**Ambiguous visual evidence.** Some slices may contain weak or insufficiently discriminative image features, particularly when the relevant anatomical changes are subtle.
+
+**Confidence calibration limitations.** A model can produce sharply concentrated softmax probabilities even when its classification is incorrect.
+
+These are plausible explanations rather than established causes of the five individual errors. The available images and predictions do not independently identify the anatomical or acquisition factors responsible for each misclassification.
+
+### 9.5 Interpretation and Limitations
+
+The five examples were deliberately selected to cover high-confidence and near-boundary errors. They are illustrative cases, not a random sample of model failures.
+
+Consequently, their confidence values should not be used to estimate how frequently overconfident errors occur across the full dataset.
+
+The quantitative confidence analysis in Section 8 provides a more appropriate basis for evaluating the overall relationship between confidence and classification correctness.
+
+Furthermore, all reported errors are measured at the **MRI slice level**. They cannot be directly interpreted as patient-level diagnostic errors.
+
+The results demonstrate that although ConvNeXt-Tiny improves classification performance over the baseline, it remains unsuitable for autonomous clinical decision-making without further validation, calibration, and human oversight.
+
+### 9.6 Representative Failure Visualization
+
+The analysis script `error.py` generated a five-case visualization at:
+
+`results/error_analysis/representative_errors.png`
+
+This figure contains medical images from the course-provided ADNI dataset. It should not be published to a public GitHub repository unless the applicable dataset permissions explicitly authorize redistribution.
+
+If permitted, a reviewed and appropriately de-identified copy can be added to `figures/` and referenced in this report.
+
+The table above preserves the relevant error classifications and confidence measurements without publishing the underlying MRI images.
 
 ## 10. Engineering recommendation and limitations
 
@@ -316,6 +744,7 @@ Before practical consideration, the next engineering steps should include a **pa
 
 **Verification and responsibility:** The author reviewed code, ran experiments in the Rangpur environment, tested data loading and checkpoint inference, checked patient-disjoint splits, inspected actual training logs and saved CSV metrics, and compared reported figures with outputs from the scripts. The report must accurately reflect only computations that were **personally executed and verified**. The author remains responsible for all code, results, interpretation, citations, and compliance with the course's academic-integrity rules.
 
+
 ## 12. References
 
 1. Liu, Z., et al. (2022). **A ConvNet for the 2020s (ConvNeXt).** *CVPR 2022*. https://arxiv.org/abs/2201.03545
@@ -323,4 +752,5 @@ Before practical consideration, the next engineering steps should include a **pa
 3. PyTorch / torchvision documentation. **ConvNeXt-Tiny pretrained model and transforms.** https://pytorch.org/vision/stable/models/generated/torchvision.models.convnext_tiny.html
 4. Guo, C., et al. (2017). **On Calibration of Modern Neural Networks.** *ICML 2017*. https://arxiv.org/abs/1706.04599
 5. COMP3710/COMP7710 teaching team (2026). **Working Prototype Project in the Era of Artificial Intelligence, Final Assessment Specification v2.5.** University of Queensland.
+
 
