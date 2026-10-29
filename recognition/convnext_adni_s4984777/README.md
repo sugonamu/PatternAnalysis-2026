@@ -742,7 +742,7 @@ Before practical consideration, the next engineering steps should include a **pa
 
 **Tool used:** OpenAI ChatGPT. **Assistance:** discussion of PyTorch model/training and Slurm script structure; debugging inference, CSV label parsing, and checkpoint handling; drafting evaluation and visualization scripts; outlining possible calibration, referral, and error analyses; and assistance organizing this technical documentation.
 
-**Verification and responsibility:** The author reviewed code, ran experiments in the Rangpur environment, tested data loading and checkpoint inference, checked patient-disjoint splits, inspected actual training logs and saved CSV metrics, and compared reported figures with outputs from the scripts. The report must accurately reflect only computations that were **personally executed and verified**. The author remains responsible for all code, results, interpretation, citations, and compliance with the course's academic-integrity rules.
+**Verification and responsibility:** I reviewed code, ran experiments in the Rangpur environment, tested data loading and checkpoint inference, checked patient-disjoint splits, inspected actual training logs and saved CSV metrics, and compared reported figures with outputs from the scripts. 
 
 
 ## 12. References
